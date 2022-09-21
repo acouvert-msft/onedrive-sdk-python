@@ -26,6 +26,7 @@ import json
 from .auth_provider_base import AuthProviderBase
 from .options import *
 from .session import Session
+import time
 import sys
 
 try:
@@ -39,6 +40,9 @@ class AuthProvider(AuthProviderBase):
     MSA_AUTH_SERVER_URL = "https://login.live.com/oauth20_authorize.srf"
     MSA_AUTH_TOKEN_URL = "https://login.live.com/oauth20_token.srf"
 
+    AUTH_DEVICECODE_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode"
+    AUTH_TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
+
     def __init__(self, http_provider, client_id=None, scopes=None, access_token=None, session_type=None, loop=None,
                  auth_server_url=None, auth_token_url=None):
         """Initialize the authentication provider for authenticating
@@ -49,7 +53,7 @@ class AuthProvider(AuthProviderBase):
                 The HTTP provider to use for all auth requests
             client_id (str): Defaults to None, the client id for your
                 application
-            scopes (list of str): Defaults to None, the scopes 
+            scopes (list of str): Defaults to None, the scopes
                 that are required for your application
             access_token (str): Defaults to None. Not used in this implementation.
             session_type (:class:`SessionBase<onedrivesdk.session_base.SessionBase>`):
@@ -75,6 +79,11 @@ class AuthProvider(AuthProviderBase):
         self._session = None
         self._auth_server_url = self.MSA_AUTH_SERVER_URL if auth_server_url is None else auth_server_url
         self._auth_token_url = self.MSA_AUTH_TOKEN_URL if auth_token_url is None else auth_token_url
+
+        self._auth_devicecode_url = self.AUTH_DEVICECODE_URL
+        self._auth_token_url2 = self.AUTH_TOKEN_URL
+        self._access_token = None
+        self._refresh_token = None
 
         if sys.version_info >= (3, 4, 0):
             import asyncio
@@ -180,7 +189,7 @@ class AuthProvider(AuthProviderBase):
             redirect_uri (str): The URI to redirect the callback
                 to
             client_secret (str): The client secret of your app.
-            resource (str): Defaults to None,The resource  
+            resource (str): Defaults to None,The resource
                 you want to access
         """
         params = {
@@ -224,46 +233,87 @@ class AuthProvider(AuthProviderBase):
             request (:class:`RequestBase<onedrivesdk.request_base.RequestBase>`):
                 The request to authenticate
         """
-        if self._session is None:
-            raise RuntimeError("""Session must be authenticated 
-                before applying authentication to a request.""")
-
-        if self._session.is_expired() and 'wl.offline_access' in self.scopes:
+        if self._access_token is None and 'wl.offline_access' in self.scopes:
             self.refresh_token()
 
         request.append_option(
             HeaderOption("Authorization",
-                         "bearer {}".format(self._session.access_token)))
+                         "bearer {}".format(self._access_token)))
 
-    def refresh_token(self):
-        """Refresh the token currently used by the session"""
-        if self._session is None:
-            raise RuntimeError("""Session must be authenticated 
-                before refreshing token.""")
+        self._access_token = None
 
-        if self._session.refresh_token is None:
-            raise RuntimeError("""Refresh token not present.""")
-
+    def device_code(self, on_new_user_code):
         params = {
-            "refresh_token": self._session.refresh_token,
-            "client_id": self._session.client_id,
-            "redirect_uri": self._session.redirect_uri,
-            "grant_type": "refresh_token"
+            "client_id": self.client_id
         }
-
-        if self._session.client_secret is not None:
-            params["client_secret"] = self._session.client_secret
+        if self.scopes is not None:
+            params["scope"] = " ".join(self.scopes)
 
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
         response = self._http_provider.send(method="POST",
                                             headers=headers,
-                                            url=self._session.auth_server_url,
+                                            url=self._auth_devicecode_url,
+                                            data=params)
+        if response.status != 200:
+            return
+
+        rcont = json.loads(response.content)
+
+        on_new_user_code(rcont["verification_uri"], rcont["user_code"])
+
+        expires_in = rcont["expires_in"]
+        interval = rcont["interval"]
+
+        while expires_in > 0:
+            try:
+                params = {
+                    "client_id": self.client_id,
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                    "device_code": rcont["device_code"]
+                }
+
+                headers = {"Content-Type": "application/x-www-form-urlencoded"}
+                response = self._http_provider.send(method="POST",
+                                                    headers=headers,
+                                                    url=self._auth_token_url2,
+                                                    data=params)
+                rcont = json.loads(response.content)
+                print(rcont)
+            except Exception as exception:
+                print(exception)
+                time.sleep(interval)
+                expires_in -= interval
+                continue
+
+            if response.status == 200:
+                break
+
+        self._access_token = rcont["access_token"]
+        self._refresh_token = rcont["refresh_token"]
+
+    def refresh_token(self):
+        """Refresh the token currently used by the session"""
+        if self._refresh_token is None:
+            raise RuntimeError("""Refresh token not present.""")
+
+        params = {
+            "refresh_token": self._refresh_token,
+            "client_id": self.client_id,
+            "grant_type": "refresh_token"
+        }
+
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        response = self._http_provider.send(method="POST",
+                                            headers=headers,
+                                            url=self._auth_token_url2,
                                             data=params)
         rcont = json.loads(response.content)
-        self._session.refresh_session(rcont["expires_in"],
-                                      rcont["scope"],
-                                      rcont["access_token"],
-                                      rcont["refresh_token"])
+
+        if response.status != 200:
+            return
+
+        self._access_token = rcont["access_token"]
+        self._refresh_token = rcont["refresh_token"]
 
     def redeem_refresh_token(self, resource):
         """Redeem a refresh token against a new resource. Used
@@ -303,9 +353,9 @@ class AuthProvider(AuthProviderBase):
     def save_session(self, **save_session_kwargs):
         """Save the current session. Must have already
         obtained an access_token.
-        
+
         Args:
-            save_session_kwargs (dict): Arguments to 
+            save_session_kwargs (dict): Arguments to
                 be passed to save_session.
         """
         if self._session is None:
