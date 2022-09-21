@@ -28,46 +28,15 @@ class AuthProviderBase(object):
     __metaclass__ = abc.ABCMeta
 
     @abc.abstractmethod
-    def __init__(self, http_provider, client_id, scopes, access_token):
-        pass
-
-    @property
-    def client_id(self):
-        pass
-
-    @client_id.setter
-    @abc.abstractmethod
-    def client_id(self, value):
-        pass
-
-    @property
-    def scopes(self):
-        pass
-
-    @scopes.setter
-    @abc.abstractmethod
-    def scopes(self, value):
-        pass
-
-    @property
-    def access_token(self):
-        pass
-
-    @access_token.setter
-    @abc.abstractmethod
-    def access_token(self, value):
-        pass
-
-    @abc.abstractmethod
-    def get_auth_url(self, auth_server_url, redirect_uri):
-        pass
-
-    @abc.abstractmethod
-    def authenticate(self, code, auth_server_url, redirect_uri, client_secret, resource):
+    def __init__(self, http_provider, client_id, scopes):
         pass
 
     @abc.abstractmethod
     def authenticate_request(self, request):
+        pass
+
+    @abc.abstractmethod
+    def device_code(self, on_new_user_code):
         pass
 
     @abc.abstractmethod
