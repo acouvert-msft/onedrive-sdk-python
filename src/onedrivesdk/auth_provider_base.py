@@ -36,7 +36,7 @@ class AuthProviderBase(object):
         pass
 
     @abc.abstractmethod
-    def device_code(self, on_new_user_code):
+    def device_code(self):
         pass
 
     @abc.abstractmethod

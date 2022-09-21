@@ -40,7 +40,7 @@ class AuthProvider(AuthProviderBase):
     AUTH_DEVICECODE_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode"
     AUTH_TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
 
-    def __init__(self, http_provider, client_id=None, scopes=None, loop=None):
+    def __init__(self, http_provider, client_id, on_new_user_code, scopes=None, loop=None):
         """Initialize the authentication provider for authenticating
         requests sent to OneDrive
 
@@ -59,6 +59,7 @@ class AuthProvider(AuthProviderBase):
         self._http_provider = http_provider
         self._client_id = client_id
         self._scopes = scopes
+        self._on_new_user_code = on_new_user_code
 
         self._auth_devicecode_url = self.AUTH_DEVICECODE_URL
         self._auth_token_url = self.AUTH_TOKEN_URL
@@ -68,6 +69,8 @@ class AuthProvider(AuthProviderBase):
         if sys.version_info >= (3, 4, 0):
             import asyncio
             self._loop = loop if loop else asyncio.get_event_loop()
+
+        self.load_session()
 
     def authenticate_request(self, request):
         """Append the required authentication headers
@@ -89,7 +92,7 @@ class AuthProvider(AuthProviderBase):
 
         self._access_token = None
 
-    def device_code(self, on_new_user_code):
+    def device_code(self):
         params = {
             "client_id": self._client_id
         }
@@ -106,7 +109,7 @@ class AuthProvider(AuthProviderBase):
 
         rcont = json.loads(response.content)
 
-        on_new_user_code(rcont["verification_uri"], rcont["user_code"])
+        self._on_new_user_code(rcont["verification_uri"], rcont["user_code"])
 
         expires_in = rcont["expires_in"]
         interval = rcont["interval"]
@@ -125,7 +128,6 @@ class AuthProvider(AuthProviderBase):
                                                     url=self._auth_token_url,
                                                     data=params)
                 rcont = json.loads(response.content)
-                print(rcont)
             except Exception as exception:
                 print(exception)
                 time.sleep(interval)
@@ -137,11 +139,13 @@ class AuthProvider(AuthProviderBase):
 
         self._access_token = rcont["access_token"]
         self._refresh_token = rcont["refresh_token"]
+        self.save_session()
 
     def refresh_token(self):
         """Refresh the token currently used by the session"""
         if self._refresh_token is None:
-            raise RuntimeError("""Refresh token not present.""")
+            self.device_code()
+            return
 
         params = {
             "refresh_token": self._refresh_token,
@@ -161,25 +165,22 @@ class AuthProvider(AuthProviderBase):
 
         self._access_token = rcont["access_token"]
         self._refresh_token = rcont["refresh_token"]
+        self.save_session()
 
-    def save_session(self, **save_session_kwargs):
-        """Save the current session. Must have already
-        obtained an access_token.
+    def save_session(self):
+        """Save the current refresh_token. """        
 
-        Args:
-            save_session_kwargs (dict): Arguments to
-                be passed to save_session.
-        """
-        if self._session is None:
-            raise RuntimeError("""Session must be authenticated before
-            it can be saved. """)
-        self._session.save_session(**save_session_kwargs)
+        with open("session.pickle", "wb") as session_file:
+            import pickle
+            # pickle.HIGHEST_PROTOCOL is binary format. Good perf.
+            pickle.dump(self._refresh_token, session_file, pickle.HIGHEST_PROTOCOL)
 
     def load_session(self, **load_session_kwargs):
-        """Load session. This will overwrite the current session.
+        """Load last refresh token. This will overwrite the current refresh token."""
 
-        Args:
-            load_session_kwargs (dict): Arguments to
-                be passed to load_session.
-        """
-        self._session = self._session_type.load_session(**load_session_kwargs)
+        try:
+            with open("session.pickle", "rb") as session_file:
+                import pickle
+                self._refresh_token = pickle.load(session_file)
+        finally:
+            return
